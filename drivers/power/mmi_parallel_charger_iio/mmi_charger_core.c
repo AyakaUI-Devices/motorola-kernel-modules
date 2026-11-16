@@ -1640,7 +1640,14 @@ static int mmi_chrg_manager_probe(struct platform_device *pdev)
 	chip->qcom_psy = power_supply_get_by_name("qcom_battery");
 	chip->batt_psy = power_supply_get_by_name("battery");
 	if (!chip->batt_psy) {
-		mmi_chrg_err(chip, "Could not get battery power_supply\n");
+		/*
+		 * The vendor_boot ramdisk loads this module before the PMIC
+		 * charger registers "battery". Returning here with ret == 0
+		 * used to leave the device bound without drvdata, and the
+		 * next system suspend dereferenced NULL in mmi_chrg_suspend().
+		 */
+		mmi_chrg_err(chip, "battery power_supply not registered yet, deferring\n");
+		ret = -EPROBE_DEFER;
 		goto cleanup;
 	}
 
@@ -1688,7 +1695,13 @@ static int mmi_chrg_manager_probe(struct platform_device *pdev)
 	return 0;
 cleanup:
 	mmi_charger_class_exit();
-	devm_kfree(&pdev->dev, chip);
+	/* chip lives in the devm-allocated iio_dev; devres frees it. */
+	if (chip->usb_psy)
+		power_supply_put(chip->usb_psy);
+	if (chip->batt_psy)
+		power_supply_put(chip->batt_psy);
+	if (chip->qcom_psy)
+		power_supply_put(chip->qcom_psy);
 	return ret;
 }
 
@@ -1699,7 +1712,6 @@ static int mmi_chrg_manager_remove(struct platform_device *pdev)
 	power_supply_unreg_notifier(&chip->psy_nb);
 	power_supply_unregister(chip->mmi_chrg_mgr_psy );
 	platform_set_drvdata(pdev, NULL);
-	devm_kfree(&pdev->dev, chip);
 	return 0;
 }
 
@@ -1709,7 +1721,8 @@ static int mmi_chrg_suspend(struct device *device)
 	struct platform_device *pdev = to_platform_device(device);
 	struct mmi_charger_manager *chip = platform_get_drvdata(pdev);
 
-	chip->suspended = true;
+	if (chip)
+		chip->suspended = true;
 
 	return 0;
 }
@@ -1719,7 +1732,8 @@ static int mmi_chrg_resume(struct device *device)
 	struct platform_device *pdev = to_platform_device(device);
 	struct mmi_charger_manager *chip = platform_get_drvdata(pdev);
 
-	chip->suspended = false;
+	if (chip)
+		chip->suspended = false;
 
 	return 0;
 }
